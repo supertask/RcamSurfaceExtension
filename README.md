@@ -1,5 +1,9 @@
-Rcam
+Rcam Surface Extension
 ====
+
+Rcam Surface Extension is forked from https://github.com/keijiro/Rcam long time ago.
+It looks like [this video](https://www.youtube.com/watch?v=XCj0zJmVyhA).
+
 
 ![gif](https://i.imgur.com/ihhQwGw.gif)
 ![gif](https://i.imgur.com/IsKzGCQ.gif)
