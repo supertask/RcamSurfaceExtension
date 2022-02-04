@@ -1,0 +1,204 @@
+// Rcam depth surface reconstruction shader (geometry shader)
+//
+// This is a geometry shader that accepts a single point and outputs two
+// triangles. It retrieves positions from a given position map and reconstruct
+// normal/tangent vectors. It discards triangles that only contains points on
+// the far plane.
+//
+// We use UV1 to deliver alpha values for depth shading to the fragment shader.
+
+// Uniforms given from RcamSurface.cs
+uint _XCount, _YCount;
+sampler2D _PositionMap;
+float4x4 _LocalToWorld;
+
+//Fresnel
+float _FresnelExponent;
+float3 _FresnelColor;
+
+//Mask for glitched hologram shader
+sampler2D _GlitchMaskMap;
+float4 _GlitchMaskMap_ST;
+float _NoiseDetails;
+float _NoiseSpeed;
+float _deform;
+float2 _ActiveXY;
+float _IsFadedIn;
+
+float4 glitch(float2 coord)
+{
+	float4 c = float4(coord, 0, 1);
+	float4 d;
+	float4 e;
+	for (int j = _NoiseDetails; j > 0; j--) {
+		e = floor(c);
+		d += (sin(e*e.yxyx + e * (_Time / 10)));
+		c *= 2.5;
+	}
+	float4 glitch_res = d;
+	return glitch_res;
+}
+
+// Position map sample helper
+float4 SamplePosition(float u, float v)
+{
+    return tex2Dlod(_PositionMap, float4(u, v, 0, 0));
+}
+
+// Vertex data output helper
+PackedVaryingsType VertexOutput
+    (float3 position, float3 normal, float3 tangent, float2 uv, float alpha)
+{
+    AttributesMesh am;
+    am.positionOS = position;
+#ifdef ATTRIBUTES_NEED_NORMAL
+    am.normalOS = normal;
+#endif
+#ifdef ATTRIBUTES_NEED_TANGENT
+    am.tangentOS = float4(tangent, 1);
+#endif
+#ifdef ATTRIBUTES_NEED_TEXCOORD0
+    am.uv0 = uv;
+#endif
+#ifdef ATTRIBUTES_NEED_TEXCOORD1
+    am.uv1 = alpha;
+#endif
+#ifdef ATTRIBUTES_NEED_TEXCOORD2
+    am.uv2 = 0;
+#endif
+#ifdef ATTRIBUTES_NEED_TEXCOORD3
+    am.uv3 = 0;
+#endif
+#ifdef ATTRIBUTES_NEED_COLOR
+    am.color = 0;
+#endif
+    UNITY_TRANSFER_INSTANCE_ID(input, am);
+    return Vert(am);
+}
+
+// Geometry shader body
+[maxvertexcount(6)]
+void Geometry(
+    uint pid : SV_PrimitiveID,
+    point Attributes input[1],
+    inout TriangleStream<PackedVaryingsType> outStream
+)
+{
+    float u = (pid % _XCount + 0.5) / _XCount;
+    float v = (pid / _XCount + 0.5) / _YCount;
+
+    float du = 0.5 / _XCount;
+    float dv = 0.5 / _YCount;
+
+    // Position map samples
+    float4 s21 = SamplePosition(u - du * 1, v - dv * 3);
+    float4 s31 = SamplePosition(u + du * 1, v - dv * 3);
+
+    float4 s12 = SamplePosition(u - du * 3, v - dv * 1);
+    float4 s22 = SamplePosition(u - du * 1, v - dv * 1);
+    float4 s32 = SamplePosition(u + du * 1, v - dv * 1);
+    float4 s42 = SamplePosition(u + du * 3, v - dv * 1);
+
+    float4 s13 = SamplePosition(u - du * 3, v + dv * 1);
+    float4 s23 = SamplePosition(u - du * 1, v + dv * 1);
+    float4 s33 = SamplePosition(u + du * 1, v + dv * 1);
+    float4 s43 = SamplePosition(u + du * 3, v + dv * 1);
+
+    float4 s24 = SamplePosition(u - du * 1, v + dv * 3);
+    float4 s34 = SamplePosition(u + du * 1, v + dv * 3);
+
+    // Normal vector calculation
+    float3 n0 = normalize(cross(s32.xyz - s12.xyz, s23.xyz - s21.xyz));
+    float3 n1 = normalize(cross(s42.xyz - s22.xyz, s33.xyz - s31.xyz));
+    float3 n2 = normalize(cross(s33.xyz - s13.xyz, s24.xyz - s22.xyz));
+    float3 n3 = normalize(cross(s43.xyz - s23.xyz, s34.xyz - s32.xyz));
+
+    // Tangent vector calculation
+    float3 t0 = normalize(cross(n0, float3(0, 0, 1)));
+    float3 t1 = normalize(cross(n1, float3(0, 0, 1)));
+    float3 t2 = normalize(cross(n2, float3(0, 0, 1)));
+    float3 t3 = normalize(cross(n3, float3(0, 0, 1)));
+
+    // Convert into the world space.
+    float3 p0 = mul(_LocalToWorld, float4(s22.xyz, 1)).xyz;
+    float3 p1 = mul(_LocalToWorld, float4(s32.xyz, 1)).xyz;
+    float3 p2 = mul(_LocalToWorld, float4(s23.xyz, 1)).xyz;
+    float3 p3 = mul(_LocalToWorld, float4(s33.xyz, 1)).xyz;
+
+    n0 = mul((float3x3)_LocalToWorld, n0);
+    n1 = mul((float3x3)_LocalToWorld, n1);
+    n2 = mul((float3x3)_LocalToWorld, n2);
+    n3 = mul((float3x3)_LocalToWorld, n3);
+
+    t0 = mul((float3x3)_LocalToWorld, t0);
+    t1 = mul((float3x3)_LocalToWorld, t1);
+    t2 = mul((float3x3)_LocalToWorld, t2);
+    t3 = mul((float3x3)_LocalToWorld, t3);
+
+    // UV coordinates
+    float2 uv0 = float2(u - du, v - dv);
+    float2 uv1 = float2(u + du, v - dv);
+    float2 uv2 = float2(u - du, v + dv);
+    float2 uv3 = float2(u + du, v + dv);
+
+    // Mask values
+    float m0 = s22.w;
+    float m1 = s32.w;
+    float m2 = s23.w;
+    float m3 = s33.w;
+
+	float T = _Time * _NoiseSpeed * 30;
+	//float offset_sin =(sin(T*2)+1);
+	//float offset_cos = cos(T*2);
+	float offset_sin = lerp(sin(T*2)+1, 1, _IsFadedIn);
+	float offset_cos = lerp(cos(T*2), 1, _IsFadedIn);
+	float3 activeXY = float3(_ActiveXY, 1);
+
+	//Fresnel filter
+	float3 viewDir0 = GetWorldSpaceNormalizeViewDir(p0);
+	float3 viewDir1 = GetWorldSpaceNormalizeViewDir(p1);
+	float3 viewDir2 = GetWorldSpaceNormalizeViewDir(p2);
+	float3 viewDir3 = GetWorldSpaceNormalizeViewDir(p3);
+	float fresnel0 = pow(saturate(1 - dot(n0, viewDir0)), _FresnelExponent);
+	float fresnel1 = pow(saturate(1 - dot(n1, viewDir1)), _FresnelExponent);
+	float fresnel2 = pow(saturate(1 - dot(n2, viewDir2)), _FresnelExponent);
+	float fresnel3 = pow(saturate(1 - dot(n3, viewDir3)), _FresnelExponent);
+	float binaryThreshold = 0.5;
+
+	//Texture filter
+	float4 mask_map0 = tex2Dlod(_GlitchMaskMap, float4((uv0 * ((((_GlitchMaskMap_ST.y), (_GlitchMaskMap_ST.y * offset_cos)))) + (((_GlitchMaskMap_ST.z), (_GlitchMaskMap_ST.w * offset_sin)))), 0, 0));
+	float4 mask_map1 = tex2Dlod(_GlitchMaskMap, float4((uv1 * ((((_GlitchMaskMap_ST.y), (_GlitchMaskMap_ST.y * offset_cos)))) + (((_GlitchMaskMap_ST.z), (_GlitchMaskMap_ST.w * offset_sin)))), 0, 0));
+	float4 mask_map2 = tex2Dlod(_GlitchMaskMap, float4((uv2 * ((((_GlitchMaskMap_ST.y), (_GlitchMaskMap_ST.y * offset_cos)))) + (((_GlitchMaskMap_ST.z), (_GlitchMaskMap_ST.w * offset_sin)))), 0, 0));
+	float4 mask_map3 = tex2Dlod(_GlitchMaskMap, float4((uv3 * ((((_GlitchMaskMap_ST.y), (_GlitchMaskMap_ST.y * offset_cos)))) + (((_GlitchMaskMap_ST.z), (_GlitchMaskMap_ST.w * offset_sin)))), 0, 0));
+
+	//Glitch
+	float4 glitch_ver0 = glitch(uv0.xy)*(0.001 * _deform) * mask_map0 * fresnel0;
+	float4 glitch_ver1 = glitch(uv1.xy)*(0.001 * _deform) * mask_map1 * fresnel1;
+	float4 glitch_ver2 = glitch(uv2.xy)*(0.001 * _deform) * mask_map2 * fresnel2;
+	float4 glitch_ver3 = glitch(uv3.xy)*(0.001 * _deform) * mask_map3 * fresnel3;
+
+	p0 += glitch_ver0.xyz * activeXY * n0 * 5;
+	p1 += glitch_ver1.xyz * activeXY * n1 * 5;
+	p2 += glitch_ver2.xyz * activeXY * n2 * 5;
+	p3 += glitch_ver3.xyz * activeXY * n3 * 5;
+
+
+
+    // First triangle
+    if (m0 + m1 + m2 > 0.1)
+    {
+        outStream.Append(VertexOutput(p0, n0, t0, uv0, m0));
+        outStream.Append(VertexOutput(p1, n1, t1, uv1, m1));
+        outStream.Append(VertexOutput(p2, n2, t2, uv2, m2));
+        outStream.RestartStrip();
+    }
+
+    // Second triangle
+    if (m1 + m2 + m3 > 0.1)
+    {
+        outStream.Append(VertexOutput(p1, n1, t1, uv1, m1));
+        outStream.Append(VertexOutput(p3, n3, t3, uv3, m3));
+        outStream.Append(VertexOutput(p2, n2, t2, uv2, m2));
+        outStream.RestartStrip();
+    }
+}

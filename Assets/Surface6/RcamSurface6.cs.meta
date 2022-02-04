@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: fee61585376c59249888351f7cdffcc2
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _sensorOrigin: {instanceID: 0}
+  - _colorMap: {instanceID: 0}
+  - _positionMap: {instanceID: 0}
+  - _baseMaterial: {fileID: 2100000, guid: 9ecfae29e15b99145b98361dfb3669f6, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
